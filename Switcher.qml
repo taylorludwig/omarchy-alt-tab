@@ -75,6 +75,7 @@ Item {
     function start(direction, snapshotText) {
         Hyprland.refreshToplevels();
         root.iconCache = {};
+        root.pruneThumbs();
         root.snapshot = WindowList.parseSnapshot(snapshotText);
         root.scope = store.values.scope;
         root.windows = root.filtered();
@@ -168,6 +169,31 @@ Item {
     }
 
     property var iconCache: ({})
+
+    // Saved window pictures by address (grabToImage results; keeping the
+    // result object keeps its url valid). Bumping thumbRevision re-reads them.
+    property var thumbCache: ({})
+    property int thumbRevision: 0
+
+    function storeThumb(address, result) {
+        if (!address || !result) return;
+        root.thumbCache[address] = result;
+        root.thumbRevision++;
+    }
+
+    function thumbFor(address) {
+        var r = root.thumbCache[address];
+        return r ? String(r.url) : "";
+    }
+
+    function pruneThumbs() {
+        var existing = {};
+        var toplevels = Hyprland.toplevels.values;
+        for (var i = 0; i < toplevels.length; i++)
+            existing[WindowList.normalizeAddress(toplevels[i].address)] = true;
+        for (var key in root.thumbCache)
+            if (existing[key] !== true) delete root.thumbCache[key];
+    }
 
     function iconFor(toplevel) {
         var ipc = toplevel && toplevel.lastIpcObject ? toplevel.lastIpcObject : {};
@@ -292,8 +318,8 @@ Item {
         readonly property bool previews: store.values.previews
         readonly property int gap: Style.spacing.xxl
         readonly property int pad: Style.spacing.panelPadding
-        readonly property int baseCardWidth: previews ? Style.space(260) : Style.space(128)
-        readonly property int baseCardHeight: previews ? Style.space(200) : Style.space(138)
+        readonly property int baseCardWidth: previews ? Style.space(455) : Style.space(128)
+        readonly property int baseCardHeight: previews ? Style.space(350) : Style.space(138)
         readonly property int screenWidth: root.targetScreen ? root.targetScreen.width : 1920
         readonly property int screenHeight: root.targetScreen ? root.targetScreen.height : 1080
         readonly property var fit: WindowList.layout(
@@ -364,6 +390,8 @@ Item {
                             selected: index === root.selectedIndex
                             previews: panel.previews
                             live: root.shown
+                            cachedSource: root.thumbRevision >= 0 ? root.thumbFor(modelData.address) : ""
+                            onThumbnailReady: result => root.storeThumb(modelData.address, result)
                             width: Math.round(panel.baseCardWidth * panel.fit.scale)
                             height: Math.round(panel.baseCardHeight * panel.fit.scale)
                             onHovered: root.selectedIndex = index

@@ -14,7 +14,11 @@ Rectangle {
     property bool selected: false
     property bool previews: true
     property bool live: false
+    // Last saved picture of this window, shown when a live copy isn't possible
+    // (Hyprland can't copy windows scrolled off-screen in the scrolling layout).
+    property string cachedSource: ""
 
+    signal thumbnailReady(var result)
     signal hovered()
     signal clicked()
 
@@ -92,9 +96,34 @@ Rectangle {
             paintCursor: false
         }
 
+        // Save a picture of the live view for later, and refresh it while open.
+        Timer {
+            interval: 1500
+            repeat: true
+            triggeredOnStart: false
+            running: card.live && card.previews && preview.hasContent
+            onTriggered: preview.grabToImage(function(result) { card.thumbnailReady(result); },
+                Qt.size(preview.width, preview.height))
+        }
+        Timer {
+            interval: 300
+            running: card.live && card.previews && preview.hasContent
+            onTriggered: preview.grabToImage(function(result) { card.thumbnailReady(result); },
+                Qt.size(preview.width, preview.height))
+        }
+
+        // No live copy: show the saved picture.
+        Image {
+            visible: !preview.hasContent && card.cachedSource !== ""
+            anchors.fill: parent
+            fillMode: Image.PreserveAspectFit
+            source: card.cachedSource
+            cache: false
+        }
+
         // Fallback while no frame has arrived (or capture is unavailable).
         Image {
-            visible: !preview.hasContent
+            visible: !preview.hasContent && card.cachedSource === ""
             anchors.centerIn: parent
             width: Math.min(parent.width, parent.height) * 0.4
             height: width
