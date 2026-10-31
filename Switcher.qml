@@ -170,20 +170,38 @@ Item {
 
     property var iconCache: ({})
 
-    // Saved window pictures by address (grabToImage results; keeping the
-    // result object keeps its url valid). Bumping thumbRevision re-reads them.
+    // Saved window pictures, as PNG files in the runtime dir so they survive
+    // a shell or plugin reload. Addresses are only unique within one Hyprland
+    // session, so the folder is per session. thumbCache maps address to the
+    // revision the file was written at; the revision in the url makes the
+    // Image re-read a file that changed.
+    readonly property string thumbDir: Quickshell.env("XDG_RUNTIME_DIR") + "/omarchy-alt-tab/"
+        + (Quickshell.env("HYPRLAND_INSTANCE_SIGNATURE") || "default")
     property var thumbCache: ({})
     property int thumbRevision: 0
 
+    function thumbPath(address) {
+        return root.thumbDir + "/" + address + ".png";
+    }
+
     function storeThumb(address, result) {
-        if (!address || !result) return;
-        root.thumbCache[address] = result;
-        root.thumbRevision++;
+        if (!address || !result || !result.saveToFile(root.thumbPath(address)))
+            return;
+        root.thumbCache[address] = ++root.thumbRevision;
     }
 
     function thumbFor(address) {
-        var r = root.thumbCache[address];
-        return r ? String(r.url) : "";
+        var revision = root.thumbCache[address];
+        return revision ? "file://" + root.thumbPath(address) + "?" + revision : "";
+    }
+
+    function dropThumbs(addresses) {
+        addresses = addresses.filter(function(a) { return a !== ""; });
+        if (addresses.length === 0)
+            return;
+        for (var i = 0; i < addresses.length; i++)
+            delete root.thumbCache[addresses[i]];
+        Quickshell.execDetached(["rm", "-f"].concat(addresses.map(root.thumbPath)));
     }
 
     function pruneThumbs() {
@@ -191,8 +209,26 @@ Item {
         var toplevels = Hyprland.toplevels.values;
         for (var i = 0; i < toplevels.length; i++)
             existing[WindowList.normalizeAddress(toplevels[i].address)] = true;
+        var stale = [];
         for (var key in root.thumbCache)
-            if (existing[key] !== true) delete root.thumbCache[key];
+            if (existing[key] !== true) stale.push(key);
+        root.dropThumbs(stale);
+    }
+
+    // Pick up pictures saved before a reload.
+    Process {
+        running: true
+        command: ["sh", "-c", "mkdir -p \"$1\" && ls \"$1\"", "sh", root.thumbDir]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var names = text.split("\n");
+                for (var i = 0; i < names.length; i++) {
+                    var m = /^(0x[0-9a-f]+)\.png$/.exec(names[i]);
+                    if (m && !root.thumbCache[m[1]])
+                        root.thumbCache[m[1]] = ++root.thumbRevision;
+                }
+            }
+        }
     }
 
     // Background snapshots. Hyprland only copies windows that are on screen,
@@ -400,7 +436,7 @@ Item {
                 return;
             }
             if (event.name === "closewindow") {
-                delete root.thumbCache[WindowList.normalizeAddress(event.data)];
+                root.dropThumbs([WindowList.normalizeAddress(event.data)]);
                 return;
             }
             if (event.name !== "custom")
