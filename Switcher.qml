@@ -198,7 +198,8 @@ Item {
     // Background snapshots. Hyprland only copies windows that are on screen,
     // so the switcher alone can't picture a window on another workspace or
     // scrolled away. Instead, picture the focused window shortly after it gets
-    // focus, every so often while it keeps it, and once more as it loses it.
+    // focus and once more as it loses it. Windows on screen that have no
+    // picture yet (after a shell start or workspace switch) get one too.
     // A capture that gets no frame (window already hidden) keeps the old one.
     property string focusedAddress: ""
     property var captureQueue: []
@@ -227,6 +228,20 @@ Item {
         }
     }
 
+    function fillMissing() {
+        var shown = {};
+        var monitors = Hyprland.monitors.values;
+        for (var i = 0; i < monitors.length; i++)
+            if (monitors[i].activeWorkspace)
+                shown[monitors[i].activeWorkspace.id] = true;
+        var toplevels = Hyprland.toplevels.values;
+        for (var j = 0; j < toplevels.length; j++) {
+            var address = WindowList.normalizeAddress(toplevels[j].address);
+            if (toplevels[j].workspace && shown[toplevels[j].workspace.id] && !root.thumbCache[address])
+                root.queueCapture(address);
+        }
+    }
+
     function onFocusChanged(address) {
         if (address === root.focusedAddress)
             return;
@@ -243,16 +258,12 @@ Item {
     Timer {
         id: focusCapture
         interval: 700
-        onTriggered: {
-            root.queueCapture(root.focusedAddress);
-            focusRefresh.restart();
-        }
+        onTriggered: root.queueCapture(root.focusedAddress)
     }
     Timer {
-        id: focusRefresh
-        interval: 20000
-        repeat: true
-        onTriggered: if (!root.active) root.queueCapture(root.focusedAddress)
+        id: fillTimer
+        interval: 700
+        onTriggered: root.fillMissing()
     }
     // Give up on a window that sends no frame.
     Timer {
@@ -321,6 +332,7 @@ Item {
                     if (!root.focusedAddress)
                         root.onFocusChanged(WindowList.normalizeAddress(JSON.parse(text).address));
                 } catch (e) {}
+                fillTimer.restart();
             }
         }
     }
@@ -381,6 +393,10 @@ Item {
                 return;
             if (event.name === "activewindowv2") {
                 root.onFocusChanged(WindowList.normalizeAddress(event.data));
+                return;
+            }
+            if (event.name === "workspacev2") {
+                fillTimer.restart();
                 return;
             }
             if (event.name === "closewindow") {
