@@ -195,6 +195,136 @@ Item {
             if (existing[key] !== true) delete root.thumbCache[key];
     }
 
+    // Background snapshots. Hyprland only copies windows that are on screen,
+    // so the switcher alone can't picture a window on another workspace or
+    // scrolled away. Instead, picture the focused window shortly after it gets
+    // focus, every so often while it keeps it, and once more as it loses it.
+    // A capture that gets no frame (window already hidden) keeps the old one.
+    property string focusedAddress: ""
+    property var captureQueue: []
+    property string capturing: ""
+
+    function queueCapture(address) {
+        if (!store.values.previews || !address || root.captureQueue.indexOf(address) !== -1)
+            return;
+        root.captureQueue.push(address);
+        if (!root.capturing)
+            root.nextCapture();
+    }
+
+    function nextCapture() {
+        grabView.captureSource = null;
+        root.capturing = "";
+        while (root.captureQueue.length > 0) {
+            var address = root.captureQueue.shift();
+            var top = root.toplevelFor(address);
+            if (top && top.wayland) {
+                root.capturing = address;
+                grabView.captureSource = top.wayland;
+                captureTimeout.restart();
+                return;
+            }
+        }
+    }
+
+    function onFocusChanged(address) {
+        if (address === root.focusedAddress)
+            return;
+        var previous = root.focusedAddress;
+        root.focusedAddress = address;
+        if (previous)
+            root.queueCapture(previous);
+        if (address)
+            focusCapture.restart();
+        else
+            focusCapture.stop();
+    }
+
+    Timer {
+        id: focusCapture
+        interval: 700
+        onTriggered: {
+            root.queueCapture(root.focusedAddress);
+            focusRefresh.restart();
+        }
+    }
+    Timer {
+        id: focusRefresh
+        interval: 20000
+        repeat: true
+        onTriggered: if (!root.active) root.queueCapture(root.focusedAddress)
+    }
+    // Give up on a window that sends no frame.
+    Timer {
+        id: captureTimeout
+        interval: 1500
+        onTriggered: root.nextCapture()
+    }
+    // Let the frame reach the scene graph before grabbing it.
+    Timer {
+        id: grabDelay
+        interval: 100
+        onTriggered: {
+            var address = root.capturing;
+            if (!address || !grabView.hasContent) {
+                root.nextCapture();
+                return;
+            }
+            captureTimeout.stop();
+            grabView.grabToImage(function(result) {
+                root.storeThumb(address, result);
+                root.nextCapture();
+            }, Qt.size(grabView.width, grabView.height));
+        }
+    }
+
+    // Capture surface: a 1x1 transparent overlay that takes no input. The view
+    // sits just outside it, so nothing shows on screen, but grabToImage still
+    // renders all of it.
+    PanelWindow { // qmllint disable uncreatable-type
+        id: grabber
+        visible: store.values.previews
+        color: "transparent"
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.namespace: "omarchy-alt-tab-capture"
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+        anchors.top: true
+        anchors.left: true
+        implicitWidth: 1
+        implicitHeight: 1
+        mask: Region {}
+
+        ScreencopyView {
+            id: grabView
+            readonly property real sourceAspect: sourceSize.width > 0 && sourceSize.height > 0
+                ? sourceSize.width / sourceSize.height : panel.baseCardWidth / panel.baseCardHeight
+            readonly property real boxAspect: panel.baseCardWidth / panel.baseCardHeight
+            x: 1
+            width: sourceAspect >= boxAspect ? panel.baseCardWidth : Math.round(panel.baseCardHeight * sourceAspect)
+            height: sourceAspect >= boxAspect ? Math.round(panel.baseCardWidth / sourceAspect) : panel.baseCardHeight
+            constraintSize: Qt.size(panel.baseCardWidth * 2, panel.baseCardHeight * 2)
+            live: false
+            paintCursor: false
+            onHasContentChanged: if (hasContent && root.capturing) grabDelay.restart()
+        }
+    }
+
+    // Hyprland.activeToplevel stays empty until the first focus event, so ask
+    // Hyprland which window has focus at startup.
+    Process {
+        running: true
+        command: ["hyprctl", "activewindow", "-j"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    if (!root.focusedAddress)
+                        root.onFocusChanged(WindowList.normalizeAddress(JSON.parse(text).address));
+                } catch (e) {}
+            }
+        }
+    }
+
     function iconFor(toplevel) {
         var ipc = toplevel && toplevel.lastIpcObject ? toplevel.lastIpcObject : {};
         var appId = String((toplevel && toplevel.wayland && toplevel.wayland.appId) || ipc.class || ipc.initialClass || "");
@@ -247,7 +377,17 @@ Item {
     Connections {
         target: Hyprland
         function onRawEvent(event) {
-            if (!event || event.name !== "custom")
+            if (!event)
+                return;
+            if (event.name === "activewindowv2") {
+                root.onFocusChanged(WindowList.normalizeAddress(event.data));
+                return;
+            }
+            if (event.name === "closewindow") {
+                delete root.thumbCache[WindowList.normalizeAddress(event.data)];
+                return;
+            }
+            if (event.name !== "custom")
                 return;
             var data = String(event.data || "");
             var prefix = "omarchy-alt-tab:";
@@ -298,7 +438,9 @@ Item {
                 columns: cardGrid.columns,
                 selectedIndex: root.selectedIndex,
                 selected: selected ? selected.address : "",
-                windows: root.windows.map(function(w) { return w.address; })
+                windows: root.windows.map(function(w) { return w.address; }),
+                saved: Object.keys(root.thumbCache),
+                focused: root.focusedAddress
             });
         }
     }
