@@ -252,6 +252,10 @@ Item {
     function nextCapture() {
         grabView.captureSource = null;
         root.capturing = "";
+        // Hyprland crashes on a window capture while it has no monitor, so
+        // wait until the screens have stopped changing.
+        if (screenSettle.running || Quickshell.screens.length === 0)
+            return;
         while (root.captureQueue.length > 0) {
             var address = root.captureQueue.shift();
             var top = root.toplevelFor(address);
@@ -291,6 +295,27 @@ Item {
             focusCapture.stop();
     }
 
+    // A monitor that drops off the bus while asleep can come and go every
+    // few seconds. Drop pending captures and start again once it settles.
+    Connections {
+        target: Quickshell
+        function onScreensChanged() {
+            root.captureQueue = [];
+            captureTimeout.stop();
+            grabDelay.stop();
+            grabView.captureSource = null;
+            root.capturing = "";
+            screenSettle.restart();
+        }
+    }
+    Timer {
+        id: screenSettle
+        interval: 5000
+        onTriggered: {
+            root.nextCapture();
+            fillTimer.restart();
+        }
+    }
     Timer {
         id: focusCapture
         interval: 700
