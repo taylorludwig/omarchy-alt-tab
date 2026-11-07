@@ -241,8 +241,13 @@ Item {
     property var captureQueue: []
     property string capturing: ""
 
+    // Off: a capture of a window whose monitor just went away (KVM switch)
+    // crashes Hyprland 0.56 in CScreenshareSession::init. Pictures still get
+    // saved while the switcher is open.
+    readonly property bool backgroundCaptures: false
+
     function queueCapture(address) {
-        if (!store.values.previews || !address || root.captureQueue.indexOf(address) !== -1)
+        if (!root.backgroundCaptures || !store.values.previews || !address || root.captureQueue.indexOf(address) !== -1)
             return;
         root.captureQueue.push(address);
         if (!root.capturing)
